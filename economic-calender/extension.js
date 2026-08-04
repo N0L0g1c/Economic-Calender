@@ -16,10 +16,15 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async', 'send_and_read_finish');
 
-const REFRESH_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes (feed rate-limits aggressively)
+const MIN_NETWORK_GAP_MS = 5 * 60 * 1000; // never hit network more often than this
+const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // serve disk cache up to 24h when offline/rate-limited
 const PANEL_TICK_MS = 30 * 1000; // update countdown on panel
-const CALENDAR_URL =
-    'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
+const CALENDAR_URLS = [
+    'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
+];
+const USER_AGENT =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 /** @typedef {'High'|'Medium'|'Low'|'Holiday'|'None'|string} Impact */
 
@@ -134,6 +139,103 @@ function metricsText(forecast, previous) {
     if (forecast)
         parts.push(`F: ${forecast}`);
     return parts.join('  ');
+}
+
+function cacheFilePath() {
+    return GLib.build_filenamev([
+        GLib.get_user_cache_dir(),
+        'economic-calender',
+        'thisweek.json',
+    ]);
+}
+
+/**
+ * @returns {{events: object[], fetchedAt: number}|null}
+ */
+function loadCache() {
+    const path = cacheFilePath();
+    const file = Gio.File.new_for_path(path);
+    try {
+        if (!file.query_exists(null))
+            return null;
+        const [, contents] = file.load_contents(null);
+        const text = new TextDecoder().decode(contents);
+        const data = JSON.parse(text);
+        if (!Array.isArray(data?.events))
+            return null;
+        return {
+            events: data.events,
+            fetchedAt: Number(data.fetchedAt) || 0,
+        };
+    } catch (e) {
+        log(`Economic Calender: cache read failed: ${e}`);
+        return null;
+    }
+}
+
+/**
+ * @param {object[]} rawEvents
+ */
+function saveCache(rawEvents) {
+    const path = cacheFilePath();
+    const file = Gio.File.new_for_path(path);
+    try {
+        const dir = file.get_parent();
+        if (dir && !dir.query_exists(null))
+            dir.make_directory_with_parents(null);
+        const payload = JSON.stringify({
+            fetchedAt: Date.now(),
+            events: rawEvents,
+        });
+        file.replace_contents(
+            new TextEncoder().encode(payload),
+            null,
+            false,
+            Gio.FileCreateFlags.REPLACE_DESTINATION,
+            null
+        );
+    } catch (e) {
+        log(`Economic Calender: cache write failed: ${e}`);
+    }
+}
+
+/**
+ * Soup.Status enum does not include 429; use numeric status_code.
+ * @param {Soup.Message} message
+ * @returns {number}
+ */
+function httpStatus(message) {
+    try {
+        return message.status_code;
+    } catch {
+        try {
+            return message.get_status();
+        } catch {
+            return 0;
+        }
+    }
+}
+
+/**
+ * @param {object[]} rawList
+ * @returns {object[]}
+ */
+function normalizeEvents(rawList) {
+    const events = rawList.map(raw => {
+        const dt = parseEventDate(raw.date);
+        return {
+            title: raw.title || '',
+            country: raw.country || '',
+            impact: raw.impact || 'Low',
+            forecast: raw.forecast || '',
+            previous: raw.previous || '',
+            date: raw.date,
+            _dt: dt,
+        };
+    }).filter(e => e._dt);
+
+    events.sort((a, b) => a._dt.to_unix() - b._dt.to_unix());
+    return events;
 }
 
 class EventRow extends PopupMenu.PopupBaseMenuItem {
@@ -269,23 +371,50 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         this._refreshItem = new PopupMenu.PopupMenuItem('Refresh now');
         this._refreshItem.label.add_style_class_name('economic-calender-refresh');
         this._refreshItem.connect('activate', () => {
-            this._fetchEvents().catch(e => logError(e));
+            this._fetchEvents({force: true}).catch(e => logError(e));
         });
         this.menu.addMenuItem(this._refreshItem);
 
         this._session = new Soup.Session({
             timeout: 20,
-            user_agent: 'EconomicCalenderGNOME/1.0 (GNOME Shell extension)',
+            user_agent: USER_AGENT,
         });
         this._cancellable = null;
         this._refreshSource = 0;
         this._tickSource = 0;
         this._fetching = false;
+        this._lastNetworkAt = 0;
+        this._lastSuccessAt = 0;
+
+        // Load disk cache immediately so the menu is never empty on first open
+        this._applyCacheIfAny();
 
         this.menu.connect('open-state-changed', (_menu, open) => {
-            if (open && !this._fetching)
-                this._fetchEvents().catch(e => logError(e));
+            if (!open || this._fetching)
+                return;
+            // Only refresh from network when opening if data is stale
+            const age = Date.now() - this._lastSuccessAt;
+            if (!this._events.length || age > REFRESH_INTERVAL_MS)
+                this._fetchEvents({force: false}).catch(e => logError(e));
         });
+    }
+
+    _applyCacheIfAny() {
+        const cached = loadCache();
+        if (!cached)
+            return false;
+        const age = Date.now() - cached.fetchedAt;
+        if (age > CACHE_MAX_AGE_MS)
+            return false;
+
+        this._events = normalizeEvents(cached.events);
+        this._lastSuccessAt = cached.fetchedAt;
+        this._rebuildList();
+        this._updatePanel();
+        const mins = Math.max(1, Math.round(age / 60000));
+        this._statusItem.label.text =
+            `Cached · ${mins}m ago · ${this._events.length} events this week`;
+        return true;
     }
 
     _filterLabel() {
@@ -293,12 +422,12 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
     }
 
     start() {
-        this._fetchEvents().catch(e => logError(e));
+        this._fetchEvents({force: false}).catch(e => logError(e));
         this._refreshSource = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT,
             REFRESH_INTERVAL_MS,
             () => {
-                this._fetchEvents().catch(e => logError(e));
+                this._fetchEvents({force: false}).catch(e => logError(e));
                 return GLib.SOURCE_CONTINUE;
             }
         );
@@ -441,9 +570,25 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
             `economic-calender-panel-next ${impactStyle(next.impact)}`;
     }
 
-    async _fetchEvents() {
+    /**
+     * @param {{force?: boolean}} [opts]
+     */
+    async _fetchEvents(opts = {}) {
+        const force = !!opts.force;
         if (this._fetching)
             return;
+
+        const nowMs = Date.now();
+        if (!force && this._events.length &&
+            nowMs - this._lastSuccessAt < REFRESH_INTERVAL_MS) {
+            return;
+        }
+        if (!force && nowMs - this._lastNetworkAt < MIN_NETWORK_GAP_MS) {
+            if (!this._events.length)
+                this._applyCacheIfAny();
+            return;
+        }
+
         this._fetching = true;
 
         if (this._cancellable)
@@ -453,59 +598,97 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         this._statusItem.label.text = 'Updating…';
 
         try {
-            const message = Soup.Message.new('GET', CALENDAR_URL);
-            if (!message)
-                throw new Error('Invalid calendar URL');
-
-            const bytes = await this._session.send_and_read_async(
-                message,
-                GLib.PRIORITY_DEFAULT,
-                this._cancellable
-            );
-
-            if (message.get_status() !== Soup.Status.OK)
-                throw new Error(`HTTP ${message.get_status()}`);
-
-            const text = new TextDecoder().decode(bytes.get_data());
-            const data = JSON.parse(text);
-            if (!Array.isArray(data))
-                throw new Error('Unexpected calendar payload');
-
-            const events = data.map(raw => {
-                const dt = parseEventDate(raw.date);
-                return {
-                    title: raw.title || '',
-                    country: raw.country || '',
-                    impact: raw.impact || 'Low',
-                    forecast: raw.forecast || '',
-                    previous: raw.previous || '',
-                    date: raw.date,
-                    _dt: dt,
-                };
-            }).filter(e => e._dt);
-
-            events.sort((a, b) => a._dt.to_unix() - b._dt.to_unix());
-
+            const rawList = await this._downloadCalendar(this._cancellable);
             if (!this._session)
                 return;
 
-            this._events = events;
+            saveCache(rawList);
+            this._events = normalizeEvents(rawList);
+            this._lastSuccessAt = Date.now();
+            this._lastNetworkAt = this._lastSuccessAt;
             this._rebuildList();
             this._updatePanel();
 
             const now = GLib.DateTime.new_now_local();
             this._statusItem.label.text =
-                `Updated: ${now.format('%H:%M:%S')} · ${events.length} events this week`;
+                `Updated: ${now.format('%H:%M:%S')} · ${this._events.length} events this week`;
         } catch (e) {
             const cancelled = e instanceof GLib.Error &&
                 e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
-            if (!cancelled && this._session) {
-                logError(e, 'Economic Calender refresh failed');
-                this._statusItem.label.text = 'Update failed — try again';
+            if (cancelled || !this._session)
+                return;
+
+            this._lastNetworkAt = Date.now();
+            logError(e, 'Economic Calender refresh failed');
+
+            // Prefer stale cache over empty UI
+            if (this._applyCacheIfAny()) {
+                const msg = String(e.message || e);
+                if (msg.includes('429') || msg.toLowerCase().includes('rate'))
+                    this._statusItem.label.text =
+                        'Rate limited — showing cached calendar';
+                else
+                    this._statusItem.label.text =
+                        `Offline cache — ${msg.slice(0, 40)}`;
+            } else {
+                const msg = String(e.message || e);
+                if (msg.includes('429'))
+                    this._statusItem.label.text =
+                        'Rate limited — wait a few minutes, then Refresh';
+                else
+                    this._statusItem.label.text =
+                        `Update failed — ${msg.slice(0, 48)}`;
             }
         } finally {
             this._fetching = false;
         }
+    }
+
+    /**
+     * @param {Gio.Cancellable|null} cancellable
+     * @returns {Promise<object[]>}
+     */
+    async _downloadCalendar(cancellable) {
+        let lastError = null;
+
+        for (const url of CALENDAR_URLS) {
+            try {
+                const message = Soup.Message.new('GET', url);
+                if (!message)
+                    throw new Error('Invalid calendar URL');
+
+                message.request_headers.append('Accept', 'application/json');
+
+                const bytes = await this._session.send_and_read_async(
+                    message,
+                    GLib.PRIORITY_DEFAULT,
+                    cancellable
+                );
+
+                const status = httpStatus(message);
+                if (status === 429)
+                    throw new Error('HTTP 429 rate limited');
+                if (status < 200 || status >= 300)
+                    throw new Error(`HTTP ${status}`);
+
+                const text = new TextDecoder().decode(bytes.get_data());
+                // Feed sometimes returns HTML error pages with 200 in edge cases
+                if (text.trimStart().startsWith('<'))
+                    throw new Error('Non-JSON response from calendar feed');
+
+                const data = JSON.parse(text);
+                if (!Array.isArray(data))
+                    throw new Error('Unexpected calendar payload');
+                if (data.length === 0)
+                    throw new Error('Empty calendar');
+
+                return data;
+            } catch (e) {
+                lastError = e;
+            }
+        }
+
+        throw lastError || new Error('All calendar sources failed');
     }
 }
 
