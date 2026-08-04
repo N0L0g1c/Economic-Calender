@@ -7,15 +7,17 @@ GNOME Shell extension: top-panel **economic calendar** for upcoming macro events
 - Panel badge shows time until the next matching event
 - Menu groups events by day with country, impact, forecast & previous
 - Filter cycles: **High only** → **Medium & high** → **All**
-- Auto-refresh every 15 minutes (plus on menu open)
-- Data from the public Forex Factory week feed (`nfs.faireconomy.media`)
+- Auto-refresh every 30 minutes (plus when stale data needs updating)
+- Disk cache under `~/.cache/economic-calender/`
+- Data from a public Forex Factory week feed (`nfs.faireconomy.media`)
 
 ## Install
 
 ```bash
+UUID=economic-calender@n0l0g1c.github.io
 mkdir -p ~/.local/share/gnome-shell/extensions
-cp -a economic-calender ~/.local/share/gnome-shell/extensions/
-gnome-extensions enable economic-calender
+cp -a "$UUID" ~/.local/share/gnome-shell/extensions/
+gnome-extensions enable "$UUID"
 ```
 
 Log out/in on Wayland (or restart GNOME Shell) so the extension is discovered.
@@ -28,7 +30,7 @@ Log out/in on Wayland (or restart GNOME Shell) so the extension is discovered.
 ## Notes
 
 - Default filter is **high impact only** (click **Filter** in the menu to change).
-- Source feed rate-limits aggressive refresh; 15 minutes is intentional.
+- Source feed rate-limits aggressive refresh; caching is intentional.
 
 ## License
 

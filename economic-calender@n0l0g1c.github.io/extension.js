@@ -23,8 +23,8 @@ const PANEL_TICK_MS = 30 * 1000; // update countdown on panel
 const CALENDAR_URLS = [
     'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
 ];
-const USER_AGENT =
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+// Identify this extension honestly (do not spoof a browser User-Agent)
+const USER_AGENT = 'economic-calender@n0l0g1c.github.io/1.1';
 
 /** @typedef {'High'|'Medium'|'Low'|'Holiday'|'None'|string} Impact */
 
@@ -168,7 +168,6 @@ function loadCache() {
             fetchedAt: Number(data.fetchedAt) || 0,
         };
     } catch (e) {
-        log(`Economic Calender: cache read failed: ${e}`);
         return null;
     }
 }
@@ -195,7 +194,7 @@ function saveCache(rawEvents) {
             null
         );
     } catch (e) {
-        log(`Economic Calender: cache write failed: ${e}`);
+        // Cache is best-effort; failures are non-fatal
     }
 }
 
@@ -443,17 +442,18 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
 
     destroy() {
         if (this._refreshSource) {
-            GLib.source_remove(this._refreshSource);
+            GLib.Source.remove(this._refreshSource);
             this._refreshSource = 0;
         }
         if (this._tickSource) {
-            GLib.source_remove(this._tickSource);
+            GLib.Source.remove(this._tickSource);
             this._tickSource = 0;
         }
         if (this._cancellable) {
             this._cancellable.cancel();
             this._cancellable = null;
         }
+        this._events = [];
         this._session = null;
         super.destroy();
     }
