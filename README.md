@@ -35,3 +35,7 @@ Log out/in on Wayland (or restart GNOME Shell) so the extension is discovered.
 [GPL-2.0-or-later](LICENSE) — GNU General Public License v2.0 or later.
 
 This matches typical GNOME Shell extension licensing (extensions load into the GPL-licensed shell).
+
+## Author
+
+[N0L0g1c](https://github.com/N0L0g1c)
