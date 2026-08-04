@@ -346,6 +346,17 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
 
         /** @type {PopupMenu.PopupMenuSection} */
         this._listSection = new PopupMenu.PopupMenuSection();
+
+        // Keep the event list bounded and scrollable when there are many entries
+        const scrollView = new St.ScrollView({
+            style_class: 'vfade economic-calender-scroll',
+            overlay_scrollbars: true,
+            x_expand: true,
+            child: this._listSection.box,
+        });
+        scrollView._delegate = this._listSection;
+        this._listSection.actor = scrollView;
+
         this.menu.addMenuItem(this._listSection);
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -515,13 +526,8 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         }
 
         let lastDay = '';
-        let shown = 0;
-        const maxEvents = 40;
 
         for (const ev of upcoming) {
-            if (shown >= maxEvents)
-                break;
-
             const key = dayKey(ev._dt);
             if (key !== lastDay) {
                 lastDay = key;
@@ -541,16 +547,6 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
                 metrics: metricsText(ev.forecast || '', ev.previous || ''),
             });
             this._listSection.addMenuItem(row);
-            shown++;
-        }
-
-        if (upcoming.length > maxEvents) {
-            const more = new PopupMenu.PopupMenuItem(
-                `…and ${upcoming.length - maxEvents} more this week`,
-                {reactive: false, can_focus: false}
-            );
-            more.label.add_style_class_name('economic-calender-status');
-            this._listSection.addMenuItem(more);
         }
     }
 

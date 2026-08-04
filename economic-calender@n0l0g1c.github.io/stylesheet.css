@@ -89,3 +89,8 @@
     opacity: 0.7;
     font-style: italic;
 }
+
+/* Bound height so long weeks scroll instead of overflowing the screen */
+.economic-calender-scroll {
+    max-height: 420px;
+}
