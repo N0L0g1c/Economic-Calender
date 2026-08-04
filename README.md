@@ -29,3 +29,9 @@ Log out/in on Wayland (or restart GNOME Shell) so the extension is discovered.
 
 - Default filter is **high impact only** (click **Filter** in the menu to change).
 - Source feed rate-limits aggressive refresh; 15 minutes is intentional.
+
+## License
+
+[GPL-2.0-or-later](LICENSE) — GNU General Public License v2.0 or later.
+
+This matches typical GNOME Shell extension licensing (extensions load into the GPL-licensed shell).
