@@ -689,9 +689,30 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
 }
 
 export default class EconomicCalenderExtension extends Extension {
+    /**
+     * @param {string} role
+     * @param {import('resource:///org/gnome/shell/ui/panelMenu.js').Button} indicator
+     * @param {number} [position]
+     * @param {'left'|'center'|'right'} [box]
+     */
+    _addToPanel(role, indicator, position = 0, box = 'center') {
+        const existing = Main.panel.statusArea[role];
+        if (existing) {
+            try {
+                existing.destroy();
+            } catch {
+                // ignore
+            }
+            if (Main.panel.statusArea[role])
+                delete Main.panel.statusArea[role];
+        }
+        // position 0 in center places the indicator to the left of the clock
+        Main.panel.addToStatusArea(role, indicator, position, box);
+    }
+
     enable() {
         this._indicator = new EconomicCalenderIndicator();
-        Main.panel.addToStatusArea(this.uuid, this._indicator);
+        this._addToPanel(this.uuid, this._indicator, 0, 'center');
         this._indicator.start();
     }
 
