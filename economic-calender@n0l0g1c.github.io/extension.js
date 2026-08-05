@@ -18,7 +18,7 @@ Gio._promisify(Soup.Session.prototype, 'send_and_read_async', 'send_and_read_fin
 Gio._promisify(Gio.File.prototype, 'load_contents_async', 'load_contents_finish');
 Gio._promisify(Gio.File.prototype, 'replace_contents_async', 'replace_contents_finish');
 
-const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 min — feed rate-limits hard
+const REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 const MIN_NETWORK_GAP_MS = 5 * 60 * 1000;
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PANEL_TICK_MS = 30 * 1000;
@@ -75,13 +75,7 @@ function impactStyle(impact) {
 }
 
 function impactDot(impact) {
-    switch (impact) {
-    case 'High':
-    case 'Medium':
-        return '●';
-    default:
-        return '○';
-    }
+    return impact === 'High' || impact === 'Medium' ? '*' : '-';
 }
 
 function relativeLabel(when, now) {
@@ -129,7 +123,7 @@ async function loadCache() {
         const [, contents] = await file.load_contents_async(null);
         const text = new TextDecoder().decode(contents);
         const data = JSON.parse(text);
-        if (!Array.isArray(data?.events))
+        if (!data || !Array.isArray(data.events))
             return null;
         return {
             events: data.events,
@@ -160,18 +154,6 @@ async function saveCache(rawEvents) {
         );
     } catch {
         // cache is optional
-    }
-}
-
-function httpStatus(message) {
-    try {
-        return message.status_code;
-    } catch {
-        try {
-            return message.get_status();
-        } catch {
-            return 0;
-        }
     }
 }
 
@@ -417,8 +399,7 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
 
     _filteredUpcoming() {
         const now = GLib.DateTime.new_now_local();
-        // keep today even if morning events already passed
-        const startOfToday = GLib.DateTime.new_local(
+                const startOfToday = GLib.DateTime.new_local(
             now.get_year(),
             now.get_month(),
             now.get_day_of_month(),
@@ -593,15 +574,14 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
                     cancellable
                 );
 
-                const status = httpStatus(message);
+                const status = message.status_code;
                 if (status === 429)
                     throw new Error('HTTP 429 rate limited');
                 if (status < 200 || status >= 300)
                     throw new Error(`HTTP ${status}`);
 
                 const text = new TextDecoder().decode(bytes.get_data());
-                // sometimes the feed returns an HTML error page with 200
-                if (text.trimStart().startsWith('<'))
+                                if (text.trimStart().startsWith('<'))
                     throw new Error('Non-JSON response from calendar feed');
 
                 const data = JSON.parse(text);
@@ -621,28 +601,17 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
 }
 
 export default class EconomicCalenderExtension extends Extension {
-    _addToPanel(role, indicator, position = 0, box = 'center') {
-        const existing = Main.panel.statusArea[role];
-        if (existing) {
-            try {
-                existing.destroy();
-            } catch {
-                // ignore
-            }
-            if (Main.panel.statusArea[role])
-                delete Main.panel.statusArea[role];
-        }
-        Main.panel.addToStatusArea(role, indicator, position, box);
-    }
 
     enable() {
         this._indicator = new EconomicCalenderIndicator();
-        this._addToPanel(this.uuid, this._indicator, 0, 'center');
+        Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'center');
         this._indicator.start().catch(e => logError(e));
     }
 
     disable() {
-        this._indicator?.destroy();
-        this._indicator = null;
+        if (this._indicator) {
+            this._indicator.destroy();
+            this._indicator = null;
+        }
     }
 }
