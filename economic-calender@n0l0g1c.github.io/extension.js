@@ -15,18 +15,17 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async', 'send_and_read_finish');
+Gio._promisify(Gio.File.prototype, 'load_contents_async', 'load_contents_finish');
+Gio._promisify(Gio.File.prototype, 'replace_contents_async', 'replace_contents_finish');
 
-const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes (feed rate-limits aggressively)
-const MIN_NETWORK_GAP_MS = 5 * 60 * 1000; // never hit network more often than this
-const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // serve disk cache up to 24h when offline/rate-limited
-const PANEL_TICK_MS = 30 * 1000; // update countdown on panel
+const REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 min — feed rate-limits hard
+const MIN_NETWORK_GAP_MS = 5 * 60 * 1000;
+const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const PANEL_TICK_MS = 30 * 1000;
 const CALENDAR_URLS = [
     'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
 ];
-// Identify this extension honestly (do not spoof a browser User-Agent)
 const USER_AGENT = 'economic-calender@n0l0g1c.github.io/1.1';
-
-/** @typedef {'High'|'Medium'|'Low'|'Holiday'|'None'|string} Impact */
 
 const IMPACT_RANK = {
     High: 3,
@@ -42,28 +41,16 @@ const FILTERS = [
     {id: 'all', label: 'All events', minRank: 0},
 ];
 
-/**
- * @param {string} iso
- * @returns {GLib.DateTime|null}
- */
 function parseEventDate(iso) {
     if (!iso)
         return null;
-    // GLib accepts many ISO-8601 forms including offsets
-    const dt = GLib.DateTime.new_from_iso8601(iso, null);
-    return dt;
+    return GLib.DateTime.new_from_iso8601(iso, null);
 }
 
-/**
- * @param {GLib.DateTime} dt
- */
 function dayKey(dt) {
     return dt.format('%Y-%m-%d');
 }
 
-/**
- * @param {GLib.DateTime} dt
- */
 function dayLabel(dt) {
     const now = GLib.DateTime.new_now_local();
     const today = dayKey(now);
@@ -76,9 +63,6 @@ function dayLabel(dt) {
     return dt.format('%A, %b %e');
 }
 
-/**
- * @param {Impact} impact
- */
 function impactStyle(impact) {
     switch (impact) {
     case 'High':
@@ -90,13 +74,9 @@ function impactStyle(impact) {
     }
 }
 
-/**
- * @param {Impact} impact
- */
 function impactDot(impact) {
     switch (impact) {
     case 'High':
-        return '●';
     case 'Medium':
         return '●';
     default:
@@ -104,11 +84,6 @@ function impactDot(impact) {
     }
 }
 
-/**
- * Human countdown / relative label.
- * @param {GLib.DateTime} when
- * @param {GLib.DateTime} now
- */
 function relativeLabel(when, now) {
     const secs = when.to_unix() - now.to_unix();
     if (secs < -3600)
@@ -128,10 +103,6 @@ function relativeLabel(when, now) {
     return d === 1 ? 'in 1 day' : `in ${d} days`;
 }
 
-/**
- * @param {string} forecast
- * @param {string} previous
- */
 function metricsText(forecast, previous) {
     const parts = [];
     if (previous)
@@ -149,16 +120,13 @@ function cacheFilePath() {
     ]);
 }
 
-/**
- * @returns {{events: object[], fetchedAt: number}|null}
- */
-function loadCache() {
+async function loadCache() {
     const path = cacheFilePath();
     const file = Gio.File.new_for_path(path);
     try {
         if (!file.query_exists(null))
             return null;
-        const [, contents] = file.load_contents(null);
+        const [, contents] = await file.load_contents_async(null);
         const text = new TextDecoder().decode(contents);
         const data = JSON.parse(text);
         if (!Array.isArray(data?.events))
@@ -167,15 +135,12 @@ function loadCache() {
             events: data.events,
             fetchedAt: Number(data.fetchedAt) || 0,
         };
-    } catch (e) {
+    } catch {
         return null;
     }
 }
 
-/**
- * @param {object[]} rawEvents
- */
-function saveCache(rawEvents) {
+async function saveCache(rawEvents) {
     const path = cacheFilePath();
     const file = Gio.File.new_for_path(path);
     try {
@@ -186,23 +151,18 @@ function saveCache(rawEvents) {
             fetchedAt: Date.now(),
             events: rawEvents,
         });
-        file.replace_contents(
+        await file.replace_contents_async(
             new TextEncoder().encode(payload),
             null,
             false,
             Gio.FileCreateFlags.REPLACE_DESTINATION,
             null
         );
-    } catch (e) {
-        // Cache is best-effort; failures are non-fatal
+    } catch {
+        // cache is optional
     }
 }
 
-/**
- * Soup.Status enum does not include 429; use numeric status_code.
- * @param {Soup.Message} message
- * @returns {number}
- */
 function httpStatus(message) {
     try {
         return message.status_code;
@@ -215,10 +175,6 @@ function httpStatus(message) {
     }
 }
 
-/**
- * @param {object[]} rawList
- * @returns {object[]}
- */
 function normalizeEvents(rawList) {
     const events = rawList.map(raw => {
         const dt = parseEventDate(raw.date);
@@ -242,15 +198,6 @@ class EventRow extends PopupMenu.PopupBaseMenuItem {
         GObject.registerClass(this);
     }
 
-    /**
-     * @param {{
-     *   time: string,
-     *   country: string,
-     *   title: string,
-     *   impact: string,
-     *   metrics: string,
-     * }} event
-     */
     constructor(event) {
         super({
             reactive: false,
@@ -338,16 +285,10 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
 
         this.add_child(box);
 
-        /** @type {number} */
-        this._filterIndex = 0; // high impact default
-
-        /** @type {object[]} */
+        this._filterIndex = 0;
         this._events = [];
-
-        /** @type {PopupMenu.PopupMenuSection} */
         this._listSection = new PopupMenu.PopupMenuSection();
 
-        // Keep the event list bounded and scrollable when there are many entries
         const scrollView = new St.ScrollView({
             style_class: 'vfade economic-calender-scroll',
             overlay_scrollbars: true,
@@ -358,7 +299,6 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         this._listSection.actor = scrollView;
 
         this.menu.addMenuItem(this._listSection);
-
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this._filterItem = new PopupMenu.PopupMenuItem(this._filterLabel());
@@ -396,21 +336,19 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         this._lastNetworkAt = 0;
         this._lastSuccessAt = 0;
 
-        // Load disk cache immediately so the menu is never empty on first open
-        this._applyCacheIfAny();
+        this._menuOpenId = 0;
 
-        this.menu.connect('open-state-changed', (_menu, open) => {
+        this._menuOpenId = this.menu.connect('open-state-changed', (_menu, open) => {
             if (!open || this._fetching)
                 return;
-            // Only refresh from network when opening if data is stale
             const age = Date.now() - this._lastSuccessAt;
             if (!this._events.length || age > REFRESH_INTERVAL_MS)
                 this._fetchEvents({force: false}).catch(e => logError(e));
         });
     }
 
-    _applyCacheIfAny() {
-        const cached = loadCache();
+    async _applyCacheIfAny() {
+        const cached = await loadCache();
         if (!cached)
             return false;
         const age = Date.now() - cached.fetchedAt;
@@ -431,7 +369,8 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         return `Filter: ${FILTERS[this._filterIndex].label}`;
     }
 
-    start() {
+    async start() {
+        await this._applyCacheIfAny();
         this._fetchEvents({force: false}).catch(e => logError(e));
         this._refreshSource = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT,
@@ -452,6 +391,10 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        if (this._menuOpenId) {
+            this.menu.disconnect(this._menuOpenId);
+            this._menuOpenId = 0;
+        }
         if (this._refreshSource) {
             GLib.Source.remove(this._refreshSource);
             this._refreshSource = 0;
@@ -465,16 +408,16 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
             this._cancellable = null;
         }
         this._events = [];
-        this._session = null;
+        if (this._session) {
+            this._session.abort();
+            this._session = null;
+        }
         super.destroy();
     }
 
-    /**
-     * @returns {object[]}
-     */
     _filteredUpcoming() {
         const now = GLib.DateTime.new_now_local();
-        // Keep events from start of today so "today's morning" still listed if recent
+        // keep today even if morning events already passed
         const startOfToday = GLib.DateTime.new_local(
             now.get_year(),
             now.get_month(),
@@ -493,9 +436,6 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         });
     }
 
-    /**
-     * Next event that is still in the future (for panel countdown).
-     */
     _nextFutureEvent() {
         const nowUnix = GLib.DateTime.new_now_local().to_unix();
         const minRank = FILTERS[this._filterIndex].minRank;
@@ -566,9 +506,6 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
             `economic-calender-panel-next ${impactStyle(next.impact)}`;
     }
 
-    /**
-     * @param {{force?: boolean}} [opts]
-     */
     async _fetchEvents(opts = {}) {
         const force = !!opts.force;
         if (this._fetching)
@@ -581,7 +518,7 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         }
         if (!force && nowMs - this._lastNetworkAt < MIN_NETWORK_GAP_MS) {
             if (!this._events.length)
-                this._applyCacheIfAny();
+                await this._applyCacheIfAny();
             return;
         }
 
@@ -598,7 +535,7 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
             if (!this._session)
                 return;
 
-            saveCache(rawList);
+            await saveCache(rawList);
             this._events = normalizeEvents(rawList);
             this._lastSuccessAt = Date.now();
             this._lastNetworkAt = this._lastSuccessAt;
@@ -617,8 +554,7 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
             this._lastNetworkAt = Date.now();
             logError(e, 'Economic Calender refresh failed');
 
-            // Prefer stale cache over empty UI
-            if (this._applyCacheIfAny()) {
+            if (await this._applyCacheIfAny()) {
                 const msg = String(e.message || e);
                 if (msg.includes('429') || msg.toLowerCase().includes('rate'))
                     this._statusItem.label.text =
@@ -640,10 +576,6 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         }
     }
 
-    /**
-     * @param {Gio.Cancellable|null} cancellable
-     * @returns {Promise<object[]>}
-     */
     async _downloadCalendar(cancellable) {
         let lastError = null;
 
@@ -668,7 +600,7 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
                     throw new Error(`HTTP ${status}`);
 
                 const text = new TextDecoder().decode(bytes.get_data());
-                // Feed sometimes returns HTML error pages with 200 in edge cases
+                // sometimes the feed returns an HTML error page with 200
                 if (text.trimStart().startsWith('<'))
                     throw new Error('Non-JSON response from calendar feed');
 
@@ -689,12 +621,6 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
 }
 
 export default class EconomicCalenderExtension extends Extension {
-    /**
-     * @param {string} role
-     * @param {import('resource:///org/gnome/shell/ui/panelMenu.js').Button} indicator
-     * @param {number} [position]
-     * @param {'left'|'center'|'right'} [box]
-     */
     _addToPanel(role, indicator, position = 0, box = 'center') {
         const existing = Main.panel.statusArea[role];
         if (existing) {
@@ -706,14 +632,13 @@ export default class EconomicCalenderExtension extends Extension {
             if (Main.panel.statusArea[role])
                 delete Main.panel.statusArea[role];
         }
-        // position 0 in center places the indicator to the left of the clock
         Main.panel.addToStatusArea(role, indicator, position, box);
     }
 
     enable() {
         this._indicator = new EconomicCalenderIndicator();
         this._addToPanel(this.uuid, this._indicator, 0, 'center');
-        this._indicator.start();
+        this._indicator.start().catch(e => logError(e));
     }
 
     disable() {

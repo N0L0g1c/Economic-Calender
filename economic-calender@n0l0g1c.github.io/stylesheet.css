@@ -1,6 +1,5 @@
 /* Economic Calender — SPDX-License-Identifier: GPL-2.0-or-later */
 
-/* Economic Calender */
 
 .economic-calender-panel-label {
     font-weight: 600;
@@ -90,7 +89,7 @@
     font-style: italic;
 }
 
-/* Bound height so long weeks scroll instead of overflowing the screen */
+
 .economic-calender-scroll {
     max-height: 420px;
 }

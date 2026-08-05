@@ -1,13 +1,13 @@
 # Economic Calender
 
-GNOME Shell extension: top-panel **economic calendar** for upcoming macro events (FOMC, CPI, NFP, GDP, and more).
+GNOME Shell extension with a top-panel economic calendar (FOMC, CPI, NFP, GDP, etc.).
 
 ## Features
 
-- Panel badge shows time until the next matching event
-- Menu groups events by day with country, impact, forecast & previous
+- Panel badge with time until the next matching event
+- Events grouped by day with country, impact, forecast & previous
 - Filter cycles: **High only** → **Medium & high** → **All**
-- Auto-refresh every 30 minutes (plus when stale data needs updating)
+- Auto-refresh every 30 minutes
 - Disk cache under `~/.cache/economic-calender/`
 - Data from a public Forex Factory week feed (`nfs.faireconomy.media`)
 
@@ -20,7 +20,7 @@ cp -a "$UUID" ~/.local/share/gnome-shell/extensions/
 gnome-extensions enable "$UUID"
 ```
 
-Log out/in on Wayland (or restart GNOME Shell) so the extension is discovered.
+Log out/in on Wayland (or restart GNOME Shell) so the extension is picked up.
 
 ## Requirements
 
@@ -29,14 +29,12 @@ Log out/in on Wayland (or restart GNOME Shell) so the extension is discovered.
 
 ## Notes
 
-- Default filter is **high impact only** (click **Filter** in the menu to change).
-- Source feed rate-limits aggressive refresh; caching is intentional.
+- Default filter is high impact only (click **Filter** in the menu to change).
+- The feed rate-limits aggressive refresh; caching is intentional.
 
 ## License
 
-[GPL-2.0-or-later](LICENSE) — GNU General Public License v2.0 or later.
-
-This matches typical GNOME Shell extension licensing (extensions load into the GPL-licensed shell).
+[GPL-2.0-or-later](LICENSE)
 
 ## Author
 
