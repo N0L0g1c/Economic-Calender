@@ -1,4 +1,3 @@
-// Economic Calender — GNOME Shell top-panel macro event calendar
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import Clutter from 'gi://Clutter';
@@ -18,67 +17,31 @@ Gio._promisify(Soup.Session.prototype, 'send_and_read_async', 'send_and_read_fin
 Gio._promisify(Gio.File.prototype, 'load_contents_async', 'load_contents_finish');
 Gio._promisify(Gio.File.prototype, 'replace_contents_async', 'replace_contents_finish');
 
-const REFRESH_INTERVAL_MS = 30 * 60 * 1000;
-const MIN_NETWORK_GAP_MS = 5 * 60 * 1000;
-const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const PANEL_TICK_MS = 30 * 1000;
-const CALENDAR_URLS = [
-    'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
-];
-const USER_AGENT = 'economic-calender@n0l0g1c.github.io/1.1';
+const REFRESH_MS = 30 * 60 * 1000;
+const MIN_GAP_MS = 5 * 60 * 1000;
+const CACHE_MS = 24 * 60 * 60 * 1000;
+const TICK_MS = 30 * 1000;
+const FEED = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
+const CACHE = GLib.build_filenamev([
+    GLib.get_user_cache_dir(), 'economic-calender', 'thisweek.json',
+]);
 
-const IMPACT_RANK = {
-    High: 3,
-    Medium: 2,
-    Low: 1,
-    Holiday: 0,
-    None: 0,
-};
-
+const RANK = {High: 3, Medium: 2, Low: 1, Holiday: 0, None: 0};
 const FILTERS = [
-    {id: 'high', label: 'High impact only', minRank: 3},
-    {id: 'medium', label: 'Medium & high', minRank: 2},
-    {id: 'all', label: 'All events', minRank: 0},
+    {label: 'High impact only', min: 3},
+    {label: 'Medium & high', min: 2},
+    {label: 'All events', min: 0},
 ];
 
-function parseEventDate(iso) {
-    if (!iso)
-        return null;
-    return GLib.DateTime.new_from_iso8601(iso, null);
-}
-
-function dayKey(dt) {
-    return dt.format('%Y-%m-%d');
-}
-
-function dayLabel(dt) {
-    const now = GLib.DateTime.new_now_local();
-    const today = dayKey(now);
-    const tomorrow = dayKey(now.add_days(1));
-    const key = dayKey(dt);
-    if (key === today)
-        return `Today — ${dt.format('%a %b %e')}`;
-    if (key === tomorrow)
-        return `Tomorrow — ${dt.format('%a %b %e')}`;
-    return dt.format('%A, %b %e');
-}
-
-function impactStyle(impact) {
-    switch (impact) {
-    case 'High':
+function impactClass(impact) {
+    if (impact === 'High')
         return 'economic-calender-impact-high';
-    case 'Medium':
+    if (impact === 'Medium')
         return 'economic-calender-impact-medium';
-    default:
-        return 'economic-calender-impact-low';
-    }
+    return 'economic-calender-impact-low';
 }
 
-function impactDot(impact) {
-    return impact === 'High' || impact === 'Medium' ? '*' : '-';
-}
-
-function relativeLabel(when, now) {
+function relative(when, now) {
     const secs = when.to_unix() - now.to_unix();
     if (secs < -3600)
         return 'passed';
@@ -97,297 +60,219 @@ function relativeLabel(when, now) {
     return d === 1 ? 'in 1 day' : `in ${d} days`;
 }
 
-function metricsText(forecast, previous) {
-    const parts = [];
-    if (previous)
-        parts.push(`P: ${previous}`);
-    if (forecast)
-        parts.push(`F: ${forecast}`);
-    return parts.join('  ');
-}
-
-function cacheFilePath() {
-    return GLib.build_filenamev([
-        GLib.get_user_cache_dir(),
-        'economic-calender',
-        'thisweek.json',
-    ]);
-}
-
-async function loadCache() {
-    const path = cacheFilePath();
-    const file = Gio.File.new_for_path(path);
-    try {
-        if (!file.query_exists(null))
-            return null;
-        const [, contents] = await file.load_contents_async(null);
-        const text = new TextDecoder().decode(contents);
-        const data = JSON.parse(text);
-        if (!data || !Array.isArray(data.events))
-            return null;
-        return {
-            events: data.events,
-            fetchedAt: Number(data.fetchedAt) || 0,
-        };
-    } catch {
-        return null;
-    }
-}
-
-async function saveCache(rawEvents) {
-    const path = cacheFilePath();
-    const file = Gio.File.new_for_path(path);
-    try {
-        const dir = file.get_parent();
-        if (dir && !dir.query_exists(null))
-            dir.make_directory_with_parents(null);
-        const payload = JSON.stringify({
-            fetchedAt: Date.now(),
-            events: rawEvents,
-        });
-        await file.replace_contents_async(
-            new TextEncoder().encode(payload),
-            null,
-            false,
-            Gio.FileCreateFlags.REPLACE_DESTINATION,
-            null
-        );
-    } catch {
-        // cache is optional
-    }
-}
-
-function normalizeEvents(rawList) {
-    const events = rawList.map(raw => {
-        const dt = parseEventDate(raw.date);
-        return {
+function normalize(list) {
+    const events = [];
+    for (const raw of list) {
+        if (!raw.date)
+            continue;
+        const dt = GLib.DateTime.new_from_iso8601(raw.date, null);
+        if (!dt)
+            continue;
+        events.push({
             title: raw.title || '',
             country: raw.country || '',
             impact: raw.impact || 'Low',
             forecast: raw.forecast || '',
             previous: raw.previous || '',
-            date: raw.date,
             _dt: dt,
-        };
-    }).filter(e => e._dt);
-
+        });
+    }
     events.sort((a, b) => a._dt.to_unix() - b._dt.to_unix());
     return events;
 }
 
 class EventRow extends PopupMenu.PopupBaseMenuItem {
-    static {
-        GObject.registerClass(this);
-    }
+    static { GObject.registerClass(this); }
 
-    constructor(event) {
+    constructor(ev) {
+        const cls = impactClass(ev.impact);
         super({
             reactive: false,
             can_focus: false,
-            style_class: `economic-calender-event ${impactStyle(event.impact)}`,
+            style_class: `economic-calender-event ${cls}`,
         });
-
-        const dot = new St.Label({
-            text: impactDot(event.impact),
+        this.add_child(new St.Label({
+            text: ev.impact === 'High' || ev.impact === 'Medium' ? '*' : '-',
             y_align: Clutter.ActorAlign.CENTER,
-            style_class: `economic-calender-impact-dot ${impactStyle(event.impact)}`,
-        });
-        this.add_child(dot);
-
-        const time = new St.Label({
-            text: event.time,
+            style_class: `economic-calender-impact-dot ${cls}`,
+        }));
+        this.add_child(new St.Label({
+            text: ev.time,
             y_align: Clutter.ActorAlign.CENTER,
             style_class: 'economic-calender-time',
-        });
-        this.add_child(time);
-
-        const country = new St.Label({
-            text: event.country || '—',
+        }));
+        this.add_child(new St.Label({
+            text: ev.country || '—',
             y_align: Clutter.ActorAlign.CENTER,
             style_class: 'economic-calender-country',
-        });
-        this.add_child(country);
-
-        const titleBox = new St.BoxLayout({
-            vertical: true,
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
+        }));
         const title = new St.Label({
-            text: event.title,
+            text: ev.title,
             style_class: 'economic-calender-title',
+            x_expand: true,
         });
-        title.clutter_text.line_wrap = false;
         title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-        titleBox.add_child(title);
-        this.add_child(titleBox);
-
-        if (event.metrics) {
-            const metrics = new St.Label({
-                text: event.metrics,
+        this.add_child(title);
+        if (ev.metrics) {
+            this.add_child(new St.Label({
+                text: ev.metrics,
                 y_align: Clutter.ActorAlign.CENTER,
                 style_class: 'economic-calender-metrics',
-            });
-            this.add_child(metrics);
+            }));
         }
     }
 }
 
-class EconomicCalenderIndicator extends PanelMenu.Button {
-    static {
-        GObject.registerClass(this);
-    }
+class Indicator extends PanelMenu.Button {
+    static { GObject.registerClass(this); }
 
     constructor() {
         super(0.5, 'Economic Calender', false);
 
-        const box = new St.BoxLayout({
-            style_class: 'panel-status-menu-box',
-        });
-
-        this._panelIcon = new St.Icon({
+        const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
+        box.add_child(new St.Icon({
             icon_name: 'x-office-calendar-symbolic',
             style_class: 'system-status-icon',
-        });
-        box.add_child(this._panelIcon);
-
-        this._panelLabel = new St.Label({
+        }));
+        this._name = new St.Label({
             text: 'Econ',
             y_align: Clutter.ActorAlign.CENTER,
             style_class: 'economic-calender-panel-label',
         });
-        box.add_child(this._panelLabel);
-
-        this._panelNext = new St.Label({
+        this._next = new St.Label({
             text: '',
             y_align: Clutter.ActorAlign.CENTER,
             style_class: 'economic-calender-panel-next',
         });
-        box.add_child(this._panelNext);
-
+        box.add_child(this._name);
+        box.add_child(this._next);
         this.add_child(box);
 
-        this._filterIndex = 0;
+        this._filter = 0;
         this._events = [];
-        this._listSection = new PopupMenu.PopupMenuSection();
-
-        const scrollView = new St.ScrollView({
+        this._list = new PopupMenu.PopupMenuSection();
+        const scroll = new St.ScrollView({
             style_class: 'vfade economic-calender-scroll',
             overlay_scrollbars: true,
             x_expand: true,
-            child: this._listSection.box,
+            child: this._list.box,
         });
-        scrollView._delegate = this._listSection;
-        this._listSection.actor = scrollView;
-
-        this.menu.addMenuItem(this._listSection);
+        scroll._delegate = this._list;
+        this._list.actor = scroll;
+        this.menu.addMenuItem(this._list);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        this._filterItem = new PopupMenu.PopupMenuItem(this._filterLabel());
-        this._filterItem.label.add_style_class_name('economic-calender-filter');
+        this._filterItem = new PopupMenu.PopupMenuItem(
+            `Filter: ${FILTERS[0].label}`);
         this._filterItem.connect('activate', () => {
-            this._filterIndex = (this._filterIndex + 1) % FILTERS.length;
-            this._filterItem.label.text = this._filterLabel();
-            this._rebuildList();
-            this._updatePanel();
+            this._filter = (this._filter + 1) % FILTERS.length;
+            this._filterItem.label.text = `Filter: ${FILTERS[this._filter].label}`;
+            this._rebuild();
+            this._tickPanel();
         });
         this.menu.addMenuItem(this._filterItem);
 
-        this._statusItem = new PopupMenu.PopupMenuItem('Updated: —', {
-            reactive: false,
-            can_focus: false,
+        this._note = new PopupMenu.PopupMenuItem('Updated: —', {
+            reactive: false, can_focus: false,
         });
-        this._statusItem.label.add_style_class_name('economic-calender-status');
-        this.menu.addMenuItem(this._statusItem);
+        this._note.label.add_style_class_name('economic-calender-status');
+        this.menu.addMenuItem(this._note);
 
-        this._refreshItem = new PopupMenu.PopupMenuItem('Refresh now');
-        this._refreshItem.label.add_style_class_name('economic-calender-refresh');
-        this._refreshItem.connect('activate', () => {
-            this._fetchEvents({force: true}).catch(e => logError(e));
-        });
-        this.menu.addMenuItem(this._refreshItem);
+        const refresh = new PopupMenu.PopupMenuItem('Refresh now');
+        refresh.connect('activate', () => this._load(true).catch(e => logError(e)));
+        this.menu.addMenuItem(refresh);
 
         this._session = new Soup.Session({
             timeout: 20,
-            user_agent: USER_AGENT,
+            user_agent: 'economic-calender@n0l0g1c.github.io/1.1',
         });
-        this._cancellable = null;
-        this._refreshSource = 0;
-        this._tickSource = 0;
-        this._fetching = false;
-        this._lastNetworkAt = 0;
-        this._lastSuccessAt = 0;
+        this._cancel = null;
+        this._refreshTimer = 0;
+        this._tickTimer = 0;
+        this._openId = 0;
+        this._busy = false;
+        this._lastNet = 0;
+        this._lastOk = 0;
 
-        this._menuOpenId = 0;
-
-        this._menuOpenId = this.menu.connect('open-state-changed', (_menu, open) => {
-            if (!open || this._fetching)
+        this._openId = this.menu.connect('open-state-changed', (_m, open) => {
+            if (!open || this._busy)
                 return;
-            const age = Date.now() - this._lastSuccessAt;
-            if (!this._events.length || age > REFRESH_INTERVAL_MS)
-                this._fetchEvents({force: false}).catch(e => logError(e));
+            if (!this._events.length || Date.now() - this._lastOk > REFRESH_MS)
+                this._load(false).catch(e => logError(e));
         });
     }
 
-    async _applyCacheIfAny() {
-        const cached = await loadCache();
-        if (!cached)
+    async _readCache() {
+        try {
+            const file = Gio.File.new_for_path(CACHE);
+            if (!file.query_exists(null))
+                return false;
+            const [, bytes] = await file.load_contents_async(null);
+            const data = JSON.parse(new TextDecoder().decode(bytes));
+            if (!data || !Array.isArray(data.events))
+                return false;
+            const age = Date.now() - (Number(data.fetchedAt) || 0);
+            if (age > CACHE_MS)
+                return false;
+            this._events = normalize(data.events);
+            this._lastOk = Number(data.fetchedAt) || 0;
+            this._rebuild();
+            this._tickPanel();
+            const mins = Math.max(1, Math.round(age / 60000));
+            this._note.label.text =
+                `Cached · ${mins}m ago · ${this._events.length} events`;
+            return true;
+        } catch {
             return false;
-        const age = Date.now() - cached.fetchedAt;
-        if (age > CACHE_MAX_AGE_MS)
-            return false;
-
-        this._events = normalizeEvents(cached.events);
-        this._lastSuccessAt = cached.fetchedAt;
-        this._rebuildList();
-        this._updatePanel();
-        const mins = Math.max(1, Math.round(age / 60000));
-        this._statusItem.label.text =
-            `Cached · ${mins}m ago · ${this._events.length} events this week`;
-        return true;
+        }
     }
 
-    _filterLabel() {
-        return `Filter: ${FILTERS[this._filterIndex].label}`;
+    async _writeCache(raw) {
+        try {
+            const file = Gio.File.new_for_path(CACHE);
+            const dir = file.get_parent();
+            if (dir && !dir.query_exists(null))
+                dir.make_directory_with_parents(null);
+            await file.replace_contents_async(
+                new TextEncoder().encode(JSON.stringify({
+                    fetchedAt: Date.now(), events: raw,
+                })),
+                null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null
+            );
+        } catch {
+            // optional
+        }
     }
 
     async start() {
-        await this._applyCacheIfAny();
-        this._fetchEvents({force: false}).catch(e => logError(e));
-        this._refreshSource = GLib.timeout_add(
-            GLib.PRIORITY_DEFAULT,
-            REFRESH_INTERVAL_MS,
-            () => {
-                this._fetchEvents({force: false}).catch(e => logError(e));
-                return GLib.SOURCE_CONTINUE;
-            }
-        );
-        this._tickSource = GLib.timeout_add(
-            GLib.PRIORITY_DEFAULT,
-            PANEL_TICK_MS,
-            () => {
-                this._updatePanel();
-                return GLib.SOURCE_CONTINUE;
-            }
-        );
+        await this._readCache();
+        this._load(false).catch(e => logError(e));
+        this._refreshTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, REFRESH_MS, () => {
+            this._load(false).catch(e => logError(e));
+            return GLib.SOURCE_CONTINUE;
+        });
+        this._tickTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, TICK_MS, () => {
+            this._tickPanel();
+            return GLib.SOURCE_CONTINUE;
+        });
     }
 
     destroy() {
-        if (this._menuOpenId) {
-            this.menu.disconnect(this._menuOpenId);
-            this._menuOpenId = 0;
+        if (this._openId) {
+            this.menu.disconnect(this._openId);
+            this._openId = 0;
         }
-        if (this._refreshSource) {
-            GLib.Source.remove(this._refreshSource);
-            this._refreshSource = 0;
+        if (this._refreshTimer) {
+            GLib.Source.remove(this._refreshTimer);
+            this._refreshTimer = 0;
         }
-        if (this._tickSource) {
-            GLib.Source.remove(this._tickSource);
-            this._tickSource = 0;
+        if (this._tickTimer) {
+            GLib.Source.remove(this._tickTimer);
+            this._tickTimer = 0;
         }
-        if (this._cancellable) {
-            this._cancellable.cancel();
-            this._cancellable = null;
+        if (this._cancel) {
+            this._cancel.cancel();
+            this._cancel = null;
         }
         this._events = [];
         if (this._session) {
@@ -397,221 +282,162 @@ class EconomicCalenderIndicator extends PanelMenu.Button {
         super.destroy();
     }
 
-    _filteredUpcoming() {
+    _upcoming() {
         const now = GLib.DateTime.new_now_local();
-                const startOfToday = GLib.DateTime.new_local(
-            now.get_year(),
-            now.get_month(),
-            now.get_day_of_month(),
-            0, 0, 0
-        );
-        const minRank = FILTERS[this._filterIndex].minRank;
-
+        const start = GLib.DateTime.new_local(
+            now.get_year(), now.get_month(), now.get_day_of_month(), 0, 0, 0);
+        const min = FILTERS[this._filter].min;
         return this._events.filter(ev => {
-            if (!ev._dt)
+            if (ev._dt.to_unix() < start.to_unix())
                 return false;
-            if (ev._dt.to_unix() < startOfToday.to_unix())
-                return false;
-            const rank = IMPACT_RANK[ev.impact] ?? 0;
-            return rank >= minRank;
+            return (RANK[ev.impact] || 0) >= min;
         });
     }
 
-    _nextFutureEvent() {
-        const nowUnix = GLib.DateTime.new_now_local().to_unix();
-        const minRank = FILTERS[this._filterIndex].minRank;
-        return this._events.find(ev => {
-            if (!ev._dt)
-                return false;
-            if (ev._dt.to_unix() < nowUnix - 60)
-                return false;
-            const rank = IMPACT_RANK[ev.impact] ?? 0;
-            return rank >= minRank;
-        }) ?? null;
-    }
-
-    _rebuildList() {
-        this._listSection.removeAll();
-
-        const upcoming = this._filteredUpcoming();
-        if (upcoming.length === 0) {
+    _rebuild() {
+        this._list.removeAll();
+        const list = this._upcoming();
+        if (!list.length) {
             const empty = new PopupMenu.PopupMenuItem(
-                this._events.length
-                    ? 'No events match this filter'
-                    : 'Loading calendar…',
+                this._events.length ? 'No events match this filter' : 'Loading…',
                 {reactive: false, can_focus: false}
             );
             empty.label.add_style_class_name('economic-calender-empty');
-            this._listSection.addMenuItem(empty);
+            this._list.addMenuItem(empty);
             return;
         }
 
         let lastDay = '';
+        const now = GLib.DateTime.new_now_local();
+        const today = now.format('%Y-%m-%d');
+        const tomorrow = now.add_days(1).format('%Y-%m-%d');
 
-        for (const ev of upcoming) {
-            const key = dayKey(ev._dt);
+        for (const ev of list) {
+            const key = ev._dt.format('%Y-%m-%d');
             if (key !== lastDay) {
                 lastDay = key;
-                const header = new PopupMenu.PopupMenuItem(dayLabel(ev._dt), {
-                    reactive: false,
-                    can_focus: false,
+                let text = ev._dt.format('%A, %b %e');
+                if (key === today)
+                    text = `Today — ${ev._dt.format('%a %b %e')}`;
+                else if (key === tomorrow)
+                    text = `Tomorrow — ${ev._dt.format('%a %b %e')}`;
+                const header = new PopupMenu.PopupMenuItem(text, {
+                    reactive: false, can_focus: false,
                 });
                 header.label.add_style_class_name('economic-calender-day-header');
-                this._listSection.addMenuItem(header);
+                this._list.addMenuItem(header);
             }
 
-            const row = new EventRow({
+            const parts = [];
+            if (ev.previous)
+                parts.push(`P: ${ev.previous}`);
+            if (ev.forecast)
+                parts.push(`F: ${ev.forecast}`);
+            this._list.addMenuItem(new EventRow({
                 time: ev._dt.format('%H:%M'),
-                country: ev.country || '',
+                country: ev.country,
                 title: ev.title || 'Event',
-                impact: ev.impact || 'Low',
-                metrics: metricsText(ev.forecast || '', ev.previous || ''),
-            });
-            this._listSection.addMenuItem(row);
+                impact: ev.impact,
+                metrics: parts.join('  '),
+            }));
         }
     }
 
-    _updatePanel() {
-        const next = this._nextFutureEvent();
-        if (!next) {
-            this._panelNext.text = '';
-            this._panelNext.style_class = 'economic-calender-panel-next';
-            return;
-        }
-
+    _tickPanel() {
+        const min = FILTERS[this._filter].min;
         const now = GLib.DateTime.new_now_local();
-        const rel = relativeLabel(next._dt, now);
-        const title = (next.title || 'Event').slice(0, 28);
-        this._panelNext.text = `${rel} · ${title}`;
-        this._panelNext.style_class =
-            `economic-calender-panel-next ${impactStyle(next.impact)}`;
+        const next = this._events.find(ev => {
+            if (ev._dt.to_unix() < now.to_unix() - 60)
+                return false;
+            return (RANK[ev.impact] || 0) >= min;
+        });
+        if (!next) {
+            this._next.text = '';
+            return;
+        }
+        this._next.text =
+            `${relative(next._dt, now)} · ${(next.title || 'Event').slice(0, 28)}`;
+        this._next.style_class =
+            `economic-calender-panel-next ${impactClass(next.impact)}`;
     }
 
-    async _fetchEvents(opts = {}) {
-        const force = !!opts.force;
-        if (this._fetching)
+    async _load(force) {
+        if (this._busy)
             return;
-
-        const nowMs = Date.now();
-        if (!force && this._events.length &&
-            nowMs - this._lastSuccessAt < REFRESH_INTERVAL_MS) {
+        const now = Date.now();
+        if (!force && this._events.length && now - this._lastOk < REFRESH_MS)
             return;
-        }
-        if (!force && nowMs - this._lastNetworkAt < MIN_NETWORK_GAP_MS) {
+        if (!force && now - this._lastNet < MIN_GAP_MS) {
             if (!this._events.length)
-                await this._applyCacheIfAny();
+                await this._readCache();
             return;
         }
 
-        this._fetching = true;
-
-        if (this._cancellable)
-            this._cancellable.cancel();
-        this._cancellable = new Gio.Cancellable();
-
-        this._statusItem.label.text = 'Updating…';
+        this._busy = true;
+        if (this._cancel)
+            this._cancel.cancel();
+        this._cancel = new Gio.Cancellable();
+        this._note.label.text = 'Updating…';
 
         try {
-            const rawList = await this._downloadCalendar(this._cancellable);
+            const msg = Soup.Message.new('GET', FEED);
+            msg.request_headers.append('Accept', 'application/json');
+            const bytes = await this._session.send_and_read_async(
+                msg, GLib.PRIORITY_DEFAULT, this._cancel);
             if (!this._session)
                 return;
+            if (msg.status_code === 429)
+                throw new Error('HTTP 429 rate limited');
+            if (msg.status_code < 200 || msg.status_code >= 300)
+                throw new Error(`HTTP ${msg.status_code}`);
+            const text = new TextDecoder().decode(bytes.get_data());
+            if (text.trimStart().startsWith('<'))
+                throw new Error('non-JSON response');
+            const data = JSON.parse(text);
+            if (!Array.isArray(data) || !data.length)
+                throw new Error('empty calendar');
 
-            await saveCache(rawList);
-            this._events = normalizeEvents(rawList);
-            this._lastSuccessAt = Date.now();
-            this._lastNetworkAt = this._lastSuccessAt;
-            this._rebuildList();
-            this._updatePanel();
-
-            const now = GLib.DateTime.new_now_local();
-            this._statusItem.label.text =
-                `Updated: ${now.format('%H:%M:%S')} · ${this._events.length} events this week`;
+            await this._writeCache(data);
+            this._events = normalize(data);
+            this._lastOk = Date.now();
+            this._lastNet = this._lastOk;
+            this._rebuild();
+            this._tickPanel();
+            this._note.label.text =
+                `Updated: ${GLib.DateTime.new_now_local().format('%H:%M:%S')} · ${this._events.length} events`;
         } catch (e) {
-            const cancelled = e instanceof GLib.Error &&
-                e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
-            if (cancelled || !this._session)
+            if (e instanceof GLib.Error &&
+                e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                 return;
-
-            this._lastNetworkAt = Date.now();
+            if (!this._session)
+                return;
+            this._lastNet = Date.now();
             logError(e, 'Economic Calender refresh failed');
-
-            if (await this._applyCacheIfAny()) {
-                const msg = String(e.message || e);
-                if (msg.includes('429') || msg.toLowerCase().includes('rate'))
-                    this._statusItem.label.text =
-                        'Rate limited — showing cached calendar';
-                else
-                    this._statusItem.label.text =
-                        `Offline cache — ${msg.slice(0, 40)}`;
+            const msg = String(e.message || e);
+            if (await this._readCache()) {
+                this._note.label.text = msg.includes('429')
+                    ? 'Rate limited — showing cache'
+                    : `Offline cache — ${msg.slice(0, 40)}`;
             } else {
-                const msg = String(e.message || e);
-                if (msg.includes('429'))
-                    this._statusItem.label.text =
-                        'Rate limited — wait a few minutes, then Refresh';
-                else
-                    this._statusItem.label.text =
-                        `Update failed — ${msg.slice(0, 48)}`;
+                this._note.label.text = msg.includes('429')
+                    ? 'Rate limited — try again later'
+                    : `Update failed — ${msg.slice(0, 48)}`;
             }
         } finally {
-            this._fetching = false;
+            this._busy = false;
         }
-    }
-
-    async _downloadCalendar(cancellable) {
-        let lastError = null;
-
-        for (const url of CALENDAR_URLS) {
-            try {
-                const message = Soup.Message.new('GET', url);
-                if (!message)
-                    throw new Error('Invalid calendar URL');
-
-                message.request_headers.append('Accept', 'application/json');
-
-                const bytes = await this._session.send_and_read_async(
-                    message,
-                    GLib.PRIORITY_DEFAULT,
-                    cancellable
-                );
-
-                const status = message.status_code;
-                if (status === 429)
-                    throw new Error('HTTP 429 rate limited');
-                if (status < 200 || status >= 300)
-                    throw new Error(`HTTP ${status}`);
-
-                const text = new TextDecoder().decode(bytes.get_data());
-                                if (text.trimStart().startsWith('<'))
-                    throw new Error('Non-JSON response from calendar feed');
-
-                const data = JSON.parse(text);
-                if (!Array.isArray(data))
-                    throw new Error('Unexpected calendar payload');
-                if (data.length === 0)
-                    throw new Error('Empty calendar');
-
-                return data;
-            } catch (e) {
-                lastError = e;
-            }
-        }
-
-        throw lastError || new Error('All calendar sources failed');
     }
 }
 
 export default class EconomicCalenderExtension extends Extension {
-
     enable() {
-        this._indicator = new EconomicCalenderIndicator();
+        this._indicator = new Indicator();
         Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'center');
         this._indicator.start().catch(e => logError(e));
     }
 
     disable() {
-        if (this._indicator) {
-            this._indicator.destroy();
-            this._indicator = null;
-        }
+        this._indicator.destroy();
+        this._indicator = null;
     }
 }
