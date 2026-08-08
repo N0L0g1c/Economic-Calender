@@ -1,15 +1,8 @@
 {
   "uuid": "economic-calender@n0l0g1c.github.io",
   "name": "Economic Calender",
-  "description": "Top-panel economic calendar of upcoming macro events (FOMC, CPI, NFP, and more) with impact filtering, day grouping, and forecast/previous values.\n\nNetwork access: this extension downloads a public weekly economic calendar feed to show scheduled events. Responses may be cached on disk under your user cache directory. No account is required.",
-  "shell-version": [
-    "45",
-    "46",
-    "47",
-    "48",
-    "49",
-    "50"
-  ],
+  "description": "Upcoming economic events (CPI, FOMC, NFP, …) in the top panel. Data from nfs.faireconomy.media, cached under ~/.cache/economic-calender/.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/N0L0g1c/Economic-Calender",
-  "version-name": "1.1"
+  "version-name": "1.2"
 }
