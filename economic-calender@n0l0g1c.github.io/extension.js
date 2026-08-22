@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0
 /* weekly macro calendar in the panel */
 
 import Clutter from 'gi://Clutter';

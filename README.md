@@ -34,7 +34,7 @@ Log out/in on Wayland (or restart GNOME Shell) so the extension is picked up.
 
 ## License
 
-[GPL-2.0-or-later](LICENSE)
+[GPL-2.0](LICENSE)
 
 ## Author
 
